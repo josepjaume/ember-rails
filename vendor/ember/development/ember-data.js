@@ -497,8 +497,8 @@ DS.Transaction = Ember.Object.extend({
           }
 
           if (!isValid) {
-            defaultTransaction.adoptRecord(record);
-            defaultTransaction.recordBecameInFlight('clean', record);
+            self.adoptRecord(record);
+            self.recordBecameInFlight('clean', record);
           }
 
         });
