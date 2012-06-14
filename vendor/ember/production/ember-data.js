@@ -1,6 +1,6 @@
 (function() {
 window.DS = Ember.Namespace.create({
-  CURRENT_API_REVISION: 4
+  CURRENT_API_REVISION: 5
 });
 
 })();
@@ -489,9 +489,17 @@ DS.Transaction = Ember.Object.extend({
         records.forEach(function(record) {
           record.send('willCommit');
 
-          if (get(record, 'isPending') === false) {
+          var isValid = get(record, 'isValid');
+
+          if (isValid && get(record, 'isPending') === false) {
             array.push(record);
           }
+
+          if (!isValid) {
+            defaultTransaction.adoptRecord(record);
+            defaultTransaction.recordBecameInFlight('clean', record);
+          }
+
         });
 
         fn.call(binding, type, array);
@@ -514,6 +522,7 @@ DS.Transaction = Ember.Object.extend({
 
     var store = get(this, 'store');
     var adapter = get(store, '_adapter');
+    var defaultTransaction = get(store, 'defaultTransaction');
 
     this.removeCleanRecords();
 
@@ -1304,6 +1313,10 @@ DS.Store = Ember.Object.extend({
     record.send('becameInvalid', errors);
   },
 
+  recordHasError: function(record, errorMessage) {
+    record.send('becameError', errorMessage);
+  },
+
   // .................
   // . RECORD ARRAYS .
   // .................
@@ -1673,7 +1686,7 @@ var get = Ember.get, set = Ember.set, getPath = Ember.getPath, guidFor = Ember.g
   which will be passed as the second parameter to the event handler.
 
   Events should transition to a different state if appropriate. This can be
-  done by calling the state manager's `goToState()` method with a path to the
+  done by calling the state manager's `transitionTo()` method with a path to the
   desired state. The state manager will attempt to resolve the state path
   relative to the current state. If no state is found at that path, it will
   attempt to resolve it relative to the current state's parent, and then its
@@ -1687,12 +1700,12 @@ var get = Ember.get, set = Ember.set, getPath = Ember.getPath, guidFor = Ember.g
         * inFlight
 
   If we are currently in the `start` state, calling
-  `goToState('inFlight')` would transition to the `created.inFlight` state,
-  while calling `goToState('updated.inFlight')` would transition to
+  `transitionTo('inFlight')` would transition to the `created.inFlight` state,
+  while calling `transitionTo('updated.inFlight')` would transition to
   the `updated.inFlight` state.
 
   Remember that *only events* should ever cause a state transition. You should
-  never call `goToState()` from outside a state's event handler. If you are
+  never call `transitionTo()` from outside a state's event handler. If you are
   tempted to do so, create a new event and send that to the state manager.
 
   #### Flags
@@ -1882,7 +1895,7 @@ var CreatedUncommitted = Ember.Mixin.create({
     record.withTransaction(function(t) {
       t.recordBecameClean('created', record);
     });
-    manager.goToState('deleted.saved');
+    manager.transitionTo('deleted.saved');
   }
 });
 
@@ -1896,7 +1909,7 @@ var UpdatedUncommitted = Ember.Mixin.create({
       t.recordBecameClean('updated', record);
     });
 
-    manager.goToState('deleted');
+    manager.transitionTo('deleted');
   }
 });
 
@@ -1933,22 +1946,38 @@ var DirtyState = DS.State.extend({
 
     waitingOn: function(manager, object) {
       waitingOn(manager, object);
-      manager.goToState('pending');
+      manager.transitionTo('pending');
     },
 
     willCommit: function(manager) {
-      manager.goToState('inFlight');
+      var record = get(manager, 'record'),
+          isValid = record.valid();
+
+      if (isValid) {
+        manager.transitionTo('inFlight');
+      }
     },
 
-    becameInvalid: function(manager) {
-      var dirtyType = get(this, 'dirtyType'),
-          record = get(manager, 'record');
+    becameValid: function(manager) {
+      var record = get(manager, 'record');
+      get(record, 'errors').clear();
+    },
+
+    becameInvalid: function(manager, errors) {
+      var record = get(manager, 'record'),
+          dirtyType = get(this, 'dirtyType'),
+          errorsObject = get(record, 'errors'), key;
+
+      for (key in errors) {
+        errorsObject.add(key, errors[key]);
+      }
 
       record.withTransaction(function (t) {
         t.recordBecameInFlight(dirtyType, record);
       });
 
-      manager.goToState('invalid');
+      manager.transitionTo('invalid');
+      manager.send('invokeLifecycleCallbacks');
     },
 
     rollback: function(manager) {
@@ -1962,7 +1991,7 @@ var DirtyState = DS.State.extend({
         t.recordBecameClean(dirtyType, record);
       });
 
-      manager.goToState('loaded');
+      manager.transitionTo('loaded');
     }
   }, Uncommitted),
 
@@ -1992,21 +2021,29 @@ var DirtyState = DS.State.extend({
         t.recordBecameClean('inflight', record);
       });
 
-      manager.goToState('loaded');
+      manager.transitionTo('loaded');
       manager.send('invokeLifecycleCallbacks', dirtyType);
     },
 
     becameInvalid: function(manager, errors) {
-      var record = get(manager, 'record');
+      var record = get(manager, 'record'),
+          errorsObject = get(record, 'errors'), key;
 
-      set(record, 'errors', errors);
+      for (key in errors) {
+        errorsObject.add(key, errors[key]);
+      }
 
-      manager.goToState('invalid');
+      manager.transitionTo('invalid');
       manager.send('invokeLifecycleCallbacks');
     },
 
-    becameError: function(manager) {
-      manager.goToState('error');
+    becameError: function(manager, errorMessage) {
+      var record = get(manager, 'record'),
+          dirtyType = get(this, 'dirtyType');
+
+      get(record, 'errors').add('base', errorMessage);
+
+      manager.transitionTo('error', 'loaded.'+dirtyType);
       manager.send('invokeLifecycleCallbacks');
     },
 
@@ -2051,7 +2088,7 @@ var DirtyState = DS.State.extend({
       },
 
       willCommit: function(manager) {
-        manager.goToState('committing');
+        manager.transitionTo('committing');
       },
 
       doneWaitingOn: function(manager, object) {
@@ -2068,7 +2105,7 @@ var DirtyState = DS.State.extend({
 
       doneWaiting: function(manager) {
         var dirtyType = get(this, 'dirtyType');
-        manager.goToState(dirtyType + '.uncommitted');
+        manager.transitionTo(dirtyType + '.uncommitted');
       }
     }, Uncommitted),
 
@@ -2108,7 +2145,7 @@ var DirtyState = DS.State.extend({
 
         if (isEmptyObject(pendingQueue)) {
           var dirtyType = get(this, 'dirtyType');
-          manager.goToState(dirtyType + '.inFlight');
+          manager.transitionTo(dirtyType + '.inFlight');
         }
       }
     })
@@ -2131,7 +2168,7 @@ var DirtyState = DS.State.extend({
 
     // EVENTS
     deleteRecord: function(manager) {
-      manager.goToState('deleted');
+      manager.transitionTo('deleted');
     },
 
     setAssociation: setAssociation,
@@ -2140,12 +2177,12 @@ var DirtyState = DS.State.extend({
       setProperty(manager, context);
 
       var record = get(manager, 'record'),
-          errors = get(record, 'errors'),
-          key = context.key;
+          errors = get(record, 'errors');
 
-      delete errors[key];
+      errors.remove('base');
+      errors.remove(context.key);
 
-      if (!hasDefinedProperties(errors)) {
+      if (get(errors, 'isEmpty')) {
         manager.send('becameValid');
       }
     },
@@ -2156,7 +2193,10 @@ var DirtyState = DS.State.extend({
     },
 
     becameValid: function(manager) {
-      manager.goToState('uncommitted');
+      var record = get(manager, 'record');
+      get(record, 'errors').clear();
+
+      manager.transitionTo('uncommitted');
     },
 
     invokeLifecycleCallbacks: function(manager) {
@@ -2191,7 +2231,7 @@ createdState.states.pending.states.uncommitted.reopen(CreatedUncommitted);
 createdState.states.uncommitted.reopen({
   rollback: function(manager) {
     this._super(manager);
-    manager.goToState('deleted.saved');
+    manager.transitionTo('deleted.saved');
   }
 });
 
@@ -2231,13 +2271,13 @@ var states = {
     empty: DS.State.create({
       // EVENTS
       loadingData: function(manager) {
-        manager.goToState('loading');
+        manager.transitionTo('loading');
       },
 
       didChangeData: function(manager) {
         didChangeData(manager);
 
-        manager.goToState('loaded.created');
+        manager.transitionTo('loaded.created');
       }
     }),
 
@@ -2261,7 +2301,7 @@ var states = {
       },
 
       loadedData: function(manager) {
-        manager.goToState('loaded');
+        manager.transitionTo('loaded');
       }
     }),
 
@@ -2283,23 +2323,23 @@ var states = {
         // EVENTS
         setProperty: function(manager, context) {
           setProperty(manager, context);
-          manager.goToState('updated');
+          manager.transitionTo('updated');
         },
 
         setAssociation: function(manager, context) {
           setAssociation(manager, context);
-          manager.goToState('updated');
+          manager.transitionTo('updated');
         },
 
         didChangeData: didChangeData,
 
         deleteRecord: function(manager) {
-          manager.goToState('deleted');
+          manager.transitionTo('deleted');
         },
 
         waitingOn: function(manager, object) {
           waitingOn(manager, object);
-          manager.goToState('updated.pending');
+          manager.transitionTo('updated.pending');
         },
 
         invokeLifecycleCallbacks: function(manager, dirtyType) {
@@ -2355,7 +2395,17 @@ var states = {
 
         // EVENTS
         willCommit: function(manager) {
-          manager.goToState('inFlight');
+          var record = get(manager, 'record'),
+              isValid = record.valid();
+
+          if (isValid) {
+            manager.transitionTo('inFlight');
+          }
+        },
+
+        becameValid: function(manager) {
+          var record = get(manager, 'record');
+          get(record, 'errors').clear();
         },
 
         rollback: function(manager) {
@@ -2366,7 +2416,7 @@ var states = {
           record.withTransaction(function(t) {
             t.recordBecameClean('deleted', record);
           });
-          manager.goToState('loaded');
+          manager.transitionTo('loaded');
         }
       }),
 
@@ -2395,8 +2445,17 @@ var states = {
             t.recordBecameClean('inflight', record);
           });
 
-          manager.goToState('saved');
+          manager.transitionTo('saved');
 
+          manager.send('invokeLifecycleCallbacks');
+        },
+
+        becameError: function(manager, errorMessage) {
+          var record = get(manager, 'record');
+
+          get(record, 'errors').add('base', errorMessage);
+
+          manager.transitionTo('error', 'deleted.start');
           manager.send('invokeLifecycleCallbacks');
         }
       }),
@@ -2421,7 +2480,29 @@ var states = {
     error: DS.State.create({
       isError: true,
 
+      // TRANSITIONS
+      setup: function(manager, path) {
+        var record = get(manager, 'record');
+        set(this, 'resumePath', path);
+      },
+
       // EVENTS
+      resume: function(manager) {
+        var record = get(manager, 'record');
+
+        get(record, 'errors').clear();
+        manager.transitionTo(get(this, 'resumePath'));
+      },
+
+      willCommit: function(manager) {
+        manager.send('resume');
+        manager.send('willCommit');
+      },
+
+      rollback: function(manager) {
+        manager.send('resume');
+        manager.send('rollback');
+      },
 
       invokeLifecycleCallbacks: function(manager) {
         var record = get(manager, 'record');
@@ -2793,6 +2874,8 @@ DS.Model = Ember.Object.extend(Ember.Evented, {
       record: this
     });
 
+    set(this, 'errors', DS.Errors.create());
+
     set(this, 'pendingQueue', {});
 
     set(this, 'stateManager', stateManager);
@@ -3089,6 +3172,220 @@ DS.attr.transforms = {
   }
 };
 
+
+})();
+
+
+
+(function() {
+var get = Ember.get, getPath = Ember.getPath, loc = Ember.String.loc, fmt = Ember.String.fmt;
+var forEach = Ember.ArrayUtils.forEach, indexOf = Ember.ArrayUtils.indexOf;
+
+DS.Errors = Ember.Object.extend({
+
+  init: function() {
+    this.messages = Ember.Map.create();
+  },
+
+  /**
+    Get messages for attribute.
+
+    @param {String} key the attribute name
+    @return {Array} an array of error messages
+  */
+  unknownProperty: function(key) {
+    return this.messages.get(key);
+  },
+
+  /**
+    Adds message to the error messages on +attribute+. More than one error can be added to the same
+    attribute.
+    If no message is supplied, 'invalid' is assumed.
+
+    @param {String} key the attribute name
+    @param {String} message the error message for the attribute
+    @param {Object} options interpolation options
+  */
+  add: function(key, message, options) {
+    var messages, param, value;
+
+    message = message || 'invalid';
+
+    if (options) {
+      message = this.generateMessage(message, options);
+    }
+
+    this.propertyWillChange('length');
+
+    if (this.messages.has(key)) {
+      messages = this.messages.get(key);
+    } else {
+      messages = Ember.A();
+      this.messages.set(key, messages);
+    }
+    forEach(Ember.makeArray(message), function(message) {
+      if (indexOf(messages, message) === -1) {
+        messages.push(message);
+      }
+    });
+
+    this.propertyDidChange('length');
+  },
+
+  /**
+    Returns true if for given key the message was added
+
+    @param {String} key the attribute name
+    @param {String} message the error message for the attribute
+    @return {Boolean} is the massage for key exists
+  */
+  added: function(key, message) {
+    var messages = get(this, key);
+    if (messages && message) {
+      return messages.contains(message);
+    } else if (messages) {
+      return true;
+    } else {
+      return false;
+    }
+  },
+
+  /**
+    Clear the messages.
+  */
+  clear: function() {
+    if (get(this, 'isEmpty')) { return; }
+
+    this.propertyWillChange('length');
+    this.messages = Ember.Map.create();
+    this.propertyDidChange('length');
+  },
+
+  /**
+    Delete messages for attribute.
+
+    @param {String} key the attribute name
+  */
+  remove: function(key) {
+    if (!this.messages.has(key)) { return; }
+
+    this.propertyWillChange('length');
+    this.messages.remove(key);
+    this.propertyDidChange('length');
+  },
+
+  /**
+    Iterates through each error key, value pair in the error messages map.
+    Yields the attribute and the error for that attribute. If the attribute
+    has more than one error message, yields once for each error message.
+  */
+  forEach: function(callback, context) {
+    this.messages.forEach(function(attribute, messages) {
+      messages.forEach(function(message) {
+        callback.call(context, attribute, message);
+      }, this);
+    }, this);
+  },
+
+  /**
+    Returns all the full error messages in an array.
+
+    @type {Array} an array of full messages
+  */
+  fullMessages: Ember.computed(function() {
+    var messages = Ember.A();
+
+    this.forEach(function(attribute, message) {
+      messages.push(this.fullMessage(attribute, message));
+    }, this);
+
+    return messages;
+  }).property('length').cacheable(),
+
+  /**
+    Returns a full message for a given attribute.
+
+    @param  {String} key the attribute name
+    @param  {String} message the error message for the attribute
+    @return {String} formatted error message
+  */
+  fullMessage: function(key, message) {
+    message = loc(message);
+
+    if (key === 'base') {
+      return message;
+    }
+
+    key = loc(key);
+
+    return fmt('%@ %@', [key, message]);
+  },
+
+  /**
+    Returns a message with interpolated options.
+
+    @param  {String} message the error message for the attribute
+    @param  {Object} options interpolation options
+    @return {String} interpolated error message
+  */
+  generateMessage: function(message, options) {
+    var param, value;
+
+    for (param in options) {
+      value = options[param];
+      param = new RegExp('{'+param+'}');
+      message = message.replace(param, value);
+    }
+
+    return message;
+  },
+
+  /**
+    Returns the number of error messages.
+
+    @type {Number} the number of errors on the record
+  */
+  length: Ember.computed(function() {
+    var length = 0;
+    this.messages.forEach(function(attribute, messages) {
+      length += get(messages, 'length');
+    });
+    return length;
+  }).cacheable(),
+
+  /**
+    Returns true if no errors are found, false otherwise.
+
+    @type {Boolean}
+  */
+  isEmpty: Ember.computed(function() {
+    return get(this, 'length') === 0;
+  }).property('length').cacheable()
+});
+
+})();
+
+
+
+(function() {
+var getPath = Ember.getPath;
+
+DS.Model.reopen({
+  validate: Ember.K,
+
+  valid: function() {
+    this.send('becameValid');
+
+    this.validate();
+
+    if (!getPath(this, 'errors.isEmpty')) {
+      this.send('becameInvalid');
+      return false;
+    }
+
+    return true;
+  }
+});
 
 })();
 
@@ -3463,7 +3760,7 @@ var get = Ember.get, set = Ember.set, getPath = Ember.getPath;
 
 DS.RESTAdapter = DS.Adapter.extend({
   bulkCommit: false,
-	
+
   createRecord: function(store, type, record) {
     var root = this.rootForType(type);
 
@@ -3472,10 +3769,14 @@ DS.RESTAdapter = DS.Adapter.extend({
 
     this.ajax(this.buildURL(root), "POST", {
       data: data,
+
       success: function(json) {
         this.sideload(store, type, json, root);
         store.didCreateRecord(record, json[root]);
-      }
+      },
+
+      store: store,
+      records: record
     });
   },
 
@@ -3498,7 +3799,10 @@ DS.RESTAdapter = DS.Adapter.extend({
       success: function(json) {
         this.sideload(store, type, json, plural);
         store.didCreateRecords(type, records, json[plural]);
-      }
+      },
+
+      store: store,
+      records: records
     });
   },
 
@@ -3511,10 +3815,14 @@ DS.RESTAdapter = DS.Adapter.extend({
 
     this.ajax(this.buildURL(root, id), "PUT", {
       data: data,
+
       success: function(json) {
         this.sideload(store, type, json, root);
         store.didUpdateRecord(record, json && json[root]);
-      }
+      },
+
+      store: store,
+      records: record
     });
   },
 
@@ -3533,10 +3841,14 @@ DS.RESTAdapter = DS.Adapter.extend({
 
     this.ajax(this.buildURL(root, "bulk"), "PUT", {
       data: data,
+
       success: function(json) {
         this.sideload(store, type, json, plural);
         store.didUpdateRecords(records, json[plural]);
-      }
+      },
+
+      store: store,
+      records: records
     });
   },
 
@@ -3548,7 +3860,10 @@ DS.RESTAdapter = DS.Adapter.extend({
       success: function(json) {
         if (json) { this.sideload(store, type, json); }
         store.didDeleteRecord(record);
-      }
+      },
+
+      store: store,
+      records: record
     });
   },
 
@@ -3570,7 +3885,10 @@ DS.RESTAdapter = DS.Adapter.extend({
       success: function(json) {
         if (json) { this.sideload(store, type, json); }
         store.didDeleteRecords(records);
-      }
+      },
+
+      store: store,
+      records: records
     });
   },
 
@@ -3581,7 +3899,9 @@ DS.RESTAdapter = DS.Adapter.extend({
       success: function(json) {
         this.sideload(store, type, json, root);
         store.load(type, json[root]);
-      }
+      },
+
+      store: store
     });
   },
 
@@ -3593,7 +3913,9 @@ DS.RESTAdapter = DS.Adapter.extend({
       success: function(json) {
         this.sideload(store, type, json, plural);
         store.loadMany(type, json[plural]);
-      }
+      },
+
+      store: store
     });
   },
 
@@ -3604,7 +3926,9 @@ DS.RESTAdapter = DS.Adapter.extend({
       success: function(json) {
         this.sideload(store, type, json, plural);
         store.loadMany(type, json[plural]);
-      }
+      },
+
+      store: store
     });
   },
 
@@ -3616,7 +3940,9 @@ DS.RESTAdapter = DS.Adapter.extend({
       success: function(json) {
         this.sideload(store, type, json, plural);
         recordArray.load(json[plural]);
-      }
+      },
+
+      store: store
     });
   },
 
@@ -3650,7 +3976,30 @@ DS.RESTAdapter = DS.Adapter.extend({
       hash.data = JSON.stringify(hash.data);
     }
 
-    jQuery.ajax(hash);
+    var store = hash.store,
+        records = Ember.makeArray(hash.records);
+    delete hash.store;
+    delete hash.records;
+
+    hash.error = function(jqXHR, textStatus, errorThrown) {
+      var data = Ember.$.parseJSON(jqXHR.responseText);
+      if (jqXHR.status === 422 && get(records, 'length') > 0) {
+        records.forEach(function(record) {
+          store.recordWasInvalid(record, data['errors']);
+        });
+      } else {
+        var error = data['error'] || (errorThrown && errorThrown.message) || textStatus;
+        if (get(records, 'length') > 0) {
+          records.forEach(function(record) {
+            store.recordHasError(record, error);
+          });
+        } else {
+          // TODO: Handle find errors
+        }
+      }
+    };
+
+    Ember.$.ajax(hash);
   },
 
   sideload: function(store, type, json, root) {
