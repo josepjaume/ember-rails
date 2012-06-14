@@ -3179,7 +3179,7 @@ DS.attr.transforms = {
 
 (function() {
 var get = Ember.get, getPath = Ember.getPath, loc = Ember.String.loc, fmt = Ember.String.fmt;
-var forEach = Ember.ArrayUtils.forEach, indexOf = Ember.ArrayUtils.indexOf;
+var forEach = Ember.EnumerableUtils.forEach, indexOf = Ember.EnumerableUtils.indexOf;
 
 DS.Errors = Ember.Object.extend({
 
