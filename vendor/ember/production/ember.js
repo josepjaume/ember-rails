@@ -11743,8 +11743,11 @@ Ember.Application.registerInjection({
 
     router.set(name, controller);
 
-    controller.set('target', router);
-    controller.set('controllers', router);
+    controller.setProperties({
+      target: router,
+      controllers: router,
+      namespace: app
+    });
   }
 });
 
@@ -12590,6 +12593,7 @@ Ember.EventDispatcher = Ember.Object.extend(
           handler  = action.handler;
 
       if (action.eventName === eventName) {
+        evt.stopPropagation();
         return handler(evt);
       }
     });
@@ -12668,6 +12672,7 @@ Ember.ControllerMixin.reopen({
 
   target: null,
   controllers: null,
+  namespace: null,
   view: null,
 
   /**
@@ -12732,62 +12737,58 @@ Ember.ControllerMixin.reopen({
       controller's `content` property, if a controller can be
       found.
   */
-  connectOutlet: function(outletName, viewClass, context) {
+  connectOutlet: function(name, context) {
     // Normalize arguments. Supported arguments:
     //
-    // viewClass
-    // outletName, viewClass
-    // viewClass, context
-    // outletName, viewClass, context
+    // name
+    // name, context
+    // options
     //
-    // Alternatively, an options hash may be passed:
+    // The options hash has the following keys:
     //
-    //  {
-    //    name: 'outletName',
-    //    view: App.ViewClass,
-    //    context: {}
-    //  }
+    //   name: the name of the controller and view
+    //     to use. If this is passed, the name
+    //     determines the view and controller.
+    //   outletName: the name of the outlet to
+    //     fill in. default: 'view'
+    //   viewClass: the class of the view to instantiate
+    //   controller: the controller instance to pass
+    //     to the view
+    //   context: an object that should become the
+    //     controller's `content` and thus the
+    //     template's context.
 
-    var controller;
+    var outletName, viewClass, view, controller, options;
 
-    if (arguments.length === 2) {
-      if (Ember.Object.detect(outletName)) {
-        context = viewClass;
-        viewClass = outletName;
-        outletName = 'view';
-      }
-    } else if (arguments.length === 1) {
-      if (Ember.typeOf(outletName) === 'object') {
-        var options = outletName;
-        outletName = options.name;
-        viewClass = options.view;
-        context = options.context;
+    if (arguments.length === 1) {
+      if (Ember.typeOf(name) === 'object') {
+        options = name;
+        outletName = options.outletName;
+        name = options.name;
+        viewClass = options.viewClass;
         controller = options.controller;
-      } else {
-        viewClass = outletName;
-        outletName = 'view';
+        context = options.context;
       }
+    } else {
+      options = {};
     }
 
-    var parts = viewClass.toString().split("."),
-        last = parts[parts.length - 1],
-        match = last.match(/^(.*)View$/);
+    outletName = outletName || 'view';
 
 
-    var bareName = match[1], controllerName;
-    bareName = bareName.charAt(0).toLowerCase() + bareName.substr(1);
+    if (name) {
+      var namespace = get(this, 'namespace'),
+          controllers = get(this, 'controllers');
 
-    if (controller === undefined) {
-      controllerName = bareName + "Controller";
-      controller = get(get(this, 'controllers'), controllerName);
+      var viewClassName = name.charAt(0).toUpperCase() + name.substr(1) + "View";
+      viewClass = get(namespace, viewClassName);
+      controller = get(controllers, name + 'Controller');
 
-    } else if (controller === null) {
 
     }
 
-    if (context) { controller.set('content', context); }
-
-    var view = viewClass.create();
+    if (controller && context) { controller.set('content', context); }
+    view = viewClass.create();
     if (controller) { set(view, 'controller', controller); }
     set(this, outletName, view);
 
@@ -16817,6 +16818,8 @@ var paramForClass = function(classObject) {
 var merge = function(original, hash) {
   for (var prop in hash) {
     if (!hash.hasOwnProperty(prop)) { continue; }
+    if (original.hasOwnProperty(prop)) { continue; }
+
     original[prop] = hash[prop];
   }
 };
@@ -17056,6 +17059,21 @@ Ember.Routable = Ember.Mixin.create({
     var childStates = get(this, 'childStates'), match;
 
     childStates = childStates.sort(function(a, b) {
+      var aDynamicSegments = getPath(a, 'routeMatcher.identifiers.length'),
+          bDynamicSegments = getPath(b, 'routeMatcher.identifiers.length'),
+          aRoute = get(a, 'route'),
+          bRoute = get(b, 'route');
+
+      if (aRoute.indexOf(bRoute) === 0) {
+        return -1;
+      } else if (bRoute.indexOf(aRoute) === 0) {
+        return 1;
+      }
+
+      if (aDynamicSegments !== bDynamicSegments) {
+        return aDynamicSegments - bDynamicSegments;
+      }
+
       return getPath(b, 'route.length') - getPath(a, 'route.length');
     });
 
