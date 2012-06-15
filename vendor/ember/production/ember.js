@@ -9821,10 +9821,6 @@ var ClassMixin = Ember.Mixin.create(
     Ember.generateGuid(proto, 'ember');
     meta(proto).proto = proto; // this will disable observers on prototype
 
-
-    Class.subclasses = Ember.Set ? new Ember.Set() : null;
-    if (this.subclasses) { this.subclasses.add(Class); }
-
     Class.ClassMixin.apply(Class);
     return Class;
   },
@@ -10365,8 +10361,6 @@ Ember.Set = Ember.CoreObject.extend(Ember.MutableEnumerable, Ember.Copyable, Emb
 // Copyright: ©2011 Strobe Inc. and contributors.
 // License:   Licensed under MIT license (see license.js)
 // ==========================================================================
-Ember.CoreObject.subclasses = new Ember.Set();
-
 /**
   @class
 
@@ -10378,9 +10372,6 @@ Ember.CoreObject.subclasses = new Ember.Set();
   @extends Ember.Observable
 */
 Ember.Object = Ember.CoreObject.extend(Ember.Observable);
-
-
-
 
 })();
 
