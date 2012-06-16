@@ -12584,7 +12584,9 @@ Ember.EventDispatcher = Ember.Object.extend(
           handler  = action.handler;
 
       if (action.eventName === eventName) {
+        evt.preventDefault();
         evt.stopPropagation();
+        evt.preventDefault();
         return handler(evt);
       }
     });
@@ -12611,6 +12613,7 @@ Ember.EventDispatcher = Ember.Object.extend(
     var handler = object[eventName];
     if (Ember.typeOf(handler) === 'function') {
       result = handler.call(object, evt, view);
+      // Do not preventDefault in eventManagers.
       evt.stopPropagation();
     }
     else {
@@ -15079,6 +15082,8 @@ Ember.View.states.hasElement = {
   // Handle events from `Ember.EventDispatcher`
   handleEvent: function(view, eventName, evt) {
     if (view.has(eventName)) {
+      // Handler should be able to re-dispatch events, so we don't
+      // preventDefault or stopPropagation.
       return view.fire(eventName, evt);
     } else {
       return true; // continue event propagation
@@ -19787,8 +19792,18 @@ ActionHelper.registerAction = function(actionName, eventName, target, view, cont
   `jQuery.Event` object as its argument. The `jQuery.Event` object will be extended to include
   a `view` property that is set to the original view interacted with (in this case the `aView` object).
 
+  ### Event Propagation
+
+  Events triggered through the action helper will automatically have
+  `.preventDefault()` and `.stopPropagation()` called on them. You do not need
+  to do so in your event handlers, and you do not need to return `false`.
+
+  If you need the default handler to trigger, or if you need propagation,
+  you should either register your own event handler, or use event methods on
+  your view class.
 
   ### Specifying an Action Target
+
   A `target` option can be provided to change which object will receive the method call. This option must be
   a string representing a path to an object:
 
