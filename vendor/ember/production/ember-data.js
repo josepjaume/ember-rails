@@ -2161,7 +2161,7 @@ var DirtyState = DS.State.extend({
 
     invokeLifecycleCallbacks: function(manager) {
       var record = get(manager, 'record');
-      record.fire('becameInvalid', record);
+      record.trigger('becameInvalid', record);
     }
   })
 });
@@ -2251,7 +2251,7 @@ var states = {
       // TRANSITIONS
       exit: function(manager) {
         var record = get(manager, 'record');
-        record.fire('didLoad');
+        record.trigger('didLoad');
       },
 
       // EVENTS
@@ -2305,9 +2305,9 @@ var states = {
         invokeLifecycleCallbacks: function(manager, dirtyType) {
           var record = get(manager, 'record');
           if (dirtyType === 'created') {
-            record.fire('didCreate', record);
+            record.trigger('didCreate', record);
           } else {
-            record.fire('didUpdate', record);
+            record.trigger('didUpdate', record);
           }
         }
       }),
@@ -2410,7 +2410,7 @@ var states = {
 
         invokeLifecycleCallbacks: function(manager) {
           var record = get(manager, 'record');
-          record.fire('didDelete', record);
+          record.trigger('didDelete', record);
         }
       })
     }),
@@ -2425,7 +2425,7 @@ var states = {
 
       invokeLifecycleCallbacks: function(manager) {
         var record = get(manager, 'record');
-        record.fire('becameError', record);
+        record.trigger('becameError', record);
       }
     })
   })
@@ -2901,7 +2901,7 @@ DS.Model = Ember.Object.extend(Ember.Evented, {
     Override the default event firing from Ember.Evented to
     also call methods with the given name.
   */
-  fire: function(name) {
+  trigger: function(name) {
     this[name].apply(this, [].slice.call(arguments, 1));
     this._super.apply(this, arguments);
   }
