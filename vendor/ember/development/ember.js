@@ -16246,7 +16246,34 @@ Ember.State = Ember.Object.extend(Ember.Evented,
 
 var Event = Ember.$ && Ember.$.Event;
 
-Ember.State.reopenClass({
+Ember.State.reopenClass(
+/** @scope Ember.State */{
+  
+  /**
+  @static
+  
+  Creates an action function for transitioning to the named state while preserving context.
+  
+  The following example StateManagers are equivalent: 
+  
+      aManager = Ember.StateManager.create({
+        stateOne: Ember.State.create({
+          changeToStateTwo: Ember.State.transitionTo('stateTwo')
+        }),
+        stateTwo: Ember.State.create({})
+      })
+      
+      bManager = Ember.StateManager.create({
+        stateOne: Ember.State.create({
+          changeToStateTwo: function(manager, context){
+            manager.transitionTo('stateTwo', context)
+          }
+        }),
+        stateTwo: Ember.State.create({})
+      })
+  
+  @param {String} target
+  */
   transitionTo: function(target) {
     var event = function(stateManager, context) {
       if (Event && context instanceof Event) {
@@ -16617,6 +16644,24 @@ var arrayForEach = Ember.ArrayPolyfills.forEach;
       robotManager.send('beginExtermination', allHumans)
       robotManager.getPath('currentState.name') // 'rampaging'
 
+  Transition actions can also be created using the `transitionTo` method of the Ember.State class. The
+  following example StateManagers are equivalent: 
+  
+      aManager = Ember.StateManager.create({
+        stateOne: Ember.State.create({
+          changeToStateTwo: Ember.State.transitionTo('stateTwo')
+        }),
+        stateTwo: Ember.State.create({})
+      })
+      
+      bManager = Ember.StateManager.create({
+        stateOne: Ember.State.create({
+          changeToStateTwo: function(manager, context){
+            manager.transitionTo('stateTwo', context)
+          }
+        }),
+        stateTwo: Ember.State.create({})
+      })
 **/
 Ember.StateManager = Ember.State.extend(
 /** @scope Ember.StateManager.prototype */ {
@@ -17774,6 +17819,11 @@ var get = Ember.get, set = Ember.set;
 Ember.ViewState = Ember.State.extend(
 /** @scope Ember.ViewState.prototype */ {
   isViewState: true,
+
+  init: function() {
+    Ember.deprecate("Ember.ViewState is deprecated and will be removed from future releases. Consider using the outlet pattern to display nested views instead. For more informatin, see http://emberjs.com/guides/outlets/.");
+    return this._super();
+  },
 
   enter: function(stateManager) {
     var view = get(this, 'view'), root, childViews;
@@ -19302,7 +19352,7 @@ EmberHandlebars.ViewHelper = Ember.Object.create({
       if (!hash.hasOwnProperty(prop)) { continue; }
 
       // Test if the property ends in "Binding"
-      if (Ember.IS_BINDING.test(prop)) {
+      if (Ember.IS_BINDING.test(prop) && typeof hash[prop] === 'string') {
         path = hash[prop];
 
         normalized = Ember.Handlebars.normalizePath(null, path, data);
