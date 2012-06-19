@@ -4748,6 +4748,8 @@ function deferEvent(obj, eventName) {
   });
 
   return function() {
+    if (obj.isDestroyed) { return; }
+
     if (obj !== Ember && 'function' === typeof obj.sendEvent) {
       obj.sendEvent.apply(obj, a_slice.call(params, 1));
     }
@@ -8373,6 +8375,9 @@ Ember.Array = Ember.Mixin.create(Ember.Enumerable, /** @scope Ember.Array.protot
       if (addAmt    === undefined) addAmt=-1;
     }
 
+    // Make sure the @each proxy is set up if anyone is observing @each
+    if (Ember.isWatching(this, '@each')) { get(this, '@each'); }
+
     Ember.sendEvent(this, '@array:before', startIdx, removeAmt, addAmt);
 
     var removing, lim;
@@ -8385,9 +8390,6 @@ Ember.Array = Ember.Mixin.create(Ember.Enumerable, /** @scope Ember.Array.protot
     }
 
     this.enumerableContentWillChange(removing, addAmt);
-
-    // Make sure the @each proxy is set up if anyone is observing @each
-    if (Ember.isWatching(this, '@each')) { get(this, '@each'); }
 
     return this;
   },
@@ -9321,6 +9323,10 @@ Ember.Observable = Ember.Mixin.create(/** @scope Ember.Observable.prototype */ {
     this.propertyWillChange(keyName);
     this.propertyDidChange(keyName);
     return this;
+  },
+
+  addBeforeObserver: function(key, target, method) {
+    Ember.addBeforeObserver(this, key, target, method);
   },
 
   /**
@@ -11646,7 +11652,7 @@ Ember.Application = Ember.Namespace.extend(
     }
 
     if (router) {
-      set(this, 'stateManager', router);
+      set(this, 'router', router);
     }
 
     // By default, the router's namespace is the current application.
@@ -17200,11 +17206,17 @@ Ember.Routable = Ember.Mixin.create({
   },
 
   /**
-    The `connectOutlets` method will be triggered once a
+    The `connectOutlets` event will be triggered once a
     state has been entered. It will be called with the
     route's context.
   */
-  connectOutlets: Ember.K
+  connectOutlets: Ember.K,
+
+  /**
+   The `navigateAway` event will be triggered when the
+   URL changes due to the back/forward button
+  */
+  navigateAway: Ember.K
 });
 
 })();
@@ -17339,6 +17351,7 @@ Ember.Router = Ember.StateManager.extend(
     try {
       path = path.replace(/^(?=[^\/])/, "/");
 
+      this.send('navigateAway');
       this.send('unroutePath', path);
 
       var currentURL = get(this, 'currentState').absoluteRoute(this);
