@@ -102,7 +102,7 @@ DS.AdapterPopulatedRecordArray = DS.RecordArray.extend({
 
 
 (function() {
-var get = Ember.get, set = Ember.set, guidFor = Ember.guidFor;
+var get = Ember.get, set = Ember.set, getPath = Ember.getPath, guidFor = Ember.guidFor;
 
 var Set = function() {
   this.hash = {};
@@ -138,7 +138,7 @@ Set.prototype = {
   }
 };
 
-var ManyArrayState = Ember.State.extend({
+var LoadedState = Ember.State.extend({
   recordWasAdded: function(manager, record) {
     var dirty = manager.dirty, observer;
     dirty.add(record);
@@ -167,7 +167,21 @@ var ManyArrayState = Ember.State.extend({
 });
 
 var states = {
-  clean: ManyArrayState.create({
+  loading: Ember.State.create({
+    isLoaded: false,
+    isDirty: false,
+
+    loadedRecords: function(manager, count) {
+      manager.decrement(count);
+    },
+
+    becameLoaded: function(manager) {
+      manager.transitionTo('clean');
+    }
+  }),
+
+  clean: LoadedState.create({
+    isLoaded: true,
     isDirty: false,
 
     recordWasAdded: function(manager, record) {
@@ -181,7 +195,8 @@ var states = {
     }
   }),
 
-  dirty: ManyArrayState.create({
+  dirty: LoadedState.create({
+    isLoaded: true,
     isDirty: true,
 
     childWasSaved: function(manager, child) {
@@ -194,17 +209,37 @@ var states = {
     arrayBecameSaved: function(manager) {
       manager.goToState('clean');
     }
-  }) 
+  })
 };
 
 DS.ManyArrayStateManager = Ember.StateManager.extend({
   manyArray: null,
-  initialState: 'clean',
+  initialState: 'loading',
   states: states,
+
+  /**
+   This number is used to keep track of the number of outstanding
+   records that must be loaded before the array is considered
+   loaded. As results stream in, this number is decremented until
+   it becomes zero, at which case the `isLoaded` flag will be set
+   to true
+  */
+  counter: 0,
 
   init: function() {
     this._super();
     this.dirty = new Set();
+    this.counter = getPath(this, 'manyArray.length');
+  },
+
+  decrement: function(count) {
+    var counter = this.counter = this.counter - count;
+
+    Ember.assert("Somehow the ManyArray loaded counter went below 0. This is probably an ember-data bug. Please report it at https://github.com/emberjs/data/issues", counter >= 0);
+
+    if (counter === 0) {
+      this.send('becameLoaded');
+    }
   }
 });
 
@@ -213,7 +248,7 @@ DS.ManyArrayStateManager = Ember.StateManager.extend({
 
 
 (function() {
-var get = Ember.get, set = Ember.set, getPath = Ember.getPath;
+var get = Ember.get, set = Ember.set, getPath = Ember.getPath, setPath = Ember.setPath;
 
 DS.ManyArray = DS.RecordArray.extend({
   init: function() {
@@ -228,16 +263,20 @@ DS.ManyArray = DS.RecordArray.extend({
     return getPath(this, 'stateManager.currentState.isDirty');
   }).property('stateManager.currentState').cacheable(),
 
+  isLoaded: Ember.computed(function() {
+    return getPath(this, 'stateManager.currentState.isLoaded');
+  }).property('stateManager.currentState').cacheable(),
+
+  send: function(event, context) {
+    this.get('stateManager').send(event, context);
+  },
+
   fetch: function() {
     var clientIds = get(this, 'content'),
         store = get(this, 'store'),
         type = get(this, 'type');
 
-    var ids = clientIds.map(function(clientId) {
-      return store.clientIdToId[clientId];
-    });
-
-    store.fetchMany(type, ids);
+    store.fetchUnloadedClientIds(type, clientIds);
   },
 
   // Overrides Ember.Array's replace method to implement
@@ -796,6 +835,13 @@ DS.Store = Ember.Object.extend({
     this.clientIdToId = {};
     this.recordArraysByClientId = {};
 
+    // Internally, we maintain a map of all unloaded IDs requested by
+    // a ManyArray. As the adapter loads hashes into the store, the
+    // store notifies any interested ManyArrays. When the ManyArray's
+    // total number of loading records drops to zero, it becomes
+    // `isLoaded` and fires a `didLoad` event.
+    this.loadingRecordArrays = {};
+
     set(this, 'defaultTransaction', this.transaction());
 
     return this._super();
@@ -1060,78 +1106,121 @@ DS.Store = Ember.Object.extend({
   /**
     @private
 
-    Ask the adapter to fetch IDs that are not already loaded.
+    Given a type and array of `clientId`s, determines which of those
+    `clientId`s has not yet been loaded.
 
-    This method will convert `id`s to `clientId`s, filter out
-    `clientId`s that already have a data hash present, and pass
-    the remaining `id`s to the adapter.
-
-    @param {Class} type A model class
-    @param {Array} ids An array of ids
-    @param {Object} query
-
-    @returns {Array} An Array of all clientIds for the
-      specified ids.
+    In preparation for loading, this method also marks any unloaded
+    `clientId`s as loading.
   */
-  fetchMany: function(type, ids, query) {
-    var typeMap = this.typeMapFor(type),
-        idToClientIdMap = typeMap.idToCid,
+  neededClientIds: function(type, clientIds) {
+    var neededClientIds = [],
+        typeMap = this.typeMapFor(type),
         dataCache = typeMap.cidToHash,
-        data = typeMap.cidToHash,
-        needed;
+        clientId;
 
-    var clientIds = Ember.A([]);
-
-    if (ids) {
-      needed = [];
-
-      ids.forEach(function(id) {
-        // Get the clientId for the given id
-        var clientId = idToClientIdMap[id];
-
-        // If there is no `clientId` yet
-        if (clientId === undefined) {
-          // Create a new `clientId`, marking its data hash
-          // as loading. Once the adapter returns the data
-          // hash, it will be updated
-          clientId = this.pushHash(LOADING, id, type);
-          needed.push(id);
-
-        // If there is a clientId, but its data hash is
-        // marked as unloaded (this happens when a
-        // hasMany association creates clientIds for its
-        // referenced ids before they were loaded)
-        } else if (clientId && data[clientId] === UNLOADED) {
-          // change the data hash marker to loading
-          dataCache[clientId] = LOADING;
-          needed.push(id);
-        }
-
-        // this method is expected to return a list of
-        // all of the clientIds for the specified ids,
-        // unconditionally add it.
-        clientIds.push(clientId);
-      }, this);
-    } else {
-      needed = null;
+    for (var i=0, l=clientIds.length; i<l; i++) {
+      clientId = clientIds[i];
+      if (dataCache[clientId] === UNLOADED) {
+        neededClientIds.push(clientId);
+        dataCache[clientId] = LOADING;
+      }
     }
 
-    // If there are any needed ids, ask the adapter to load them
-    if ((needed && get(needed, 'length') > 0) || query) {
-      var adapter = get(this, '_adapter');
-      if (adapter && adapter.findMany) { adapter.findMany(this, type, needed, query); }
-      else { throw fmt("Adapter is either null or does not implement `findMany` method", this); }
-    }
-
-    return clientIds;
+    return neededClientIds;
   },
 
-  /** @private
-  */
-  findMany: function(type, ids, query) {
-    var clientIds = this.fetchMany(type, ids, query);
+  /**
+    @private
 
-    return this.createManyArray(type, clientIds);
+    This method is the entry point that associations use to update
+    themselves when their underlying data changes.
+
+    First, it determines which of its `clientId`s are still unloaded,
+    then converts the needed `clientId`s to IDs and invokes `findMany`
+    on the adapter.
+  */
+  fetchUnloadedClientIds: function(type, clientIds) {
+    var neededClientIds = this.neededClientIds(type, clientIds);
+    this.fetchMany(type, neededClientIds);
+  },
+
+  /**
+    @private
+
+    This method takes a type and list of `clientId`s, converts the
+    `clientId`s into IDs, and then invokes the adapter's `findMany`
+    method.
+
+    It is used both by a brand new association (via the `findMany`
+    method) or when the data underlying an existing association
+    changes (via the `fetchUnloadedClientIds` method).
+  */
+  fetchMany: function(type, clientIds) {
+    var clientIdToId = this.clientIdToId;
+
+    var neededIds = Ember.EnumerableUtils.map(clientIds, function(clientId) {
+      return clientIdToId[clientId];
+    });
+
+    var adapter = get(this, '_adapter');
+    if (adapter && adapter.findMany) { adapter.findMany(this, type, neededIds); }
+    else { throw fmt("Adapter is either null or does not implement `findMany` method", this); }
+  },
+
+  /**
+    @private
+
+    `findMany` is the entry point that associations use to generate a
+    new `ManyArray` for the list of IDs specified by the server for
+    the association.
+
+    Its responsibilities are:
+
+    * convert the IDs into clientIds
+    * determine which of the clientIds still need to be loaded
+    * create a new ManyArray whose content is *all* of the clientIds
+    * notify the ManyArray of the number of its elements that are
+      already loaded
+    * insert the unloaded clientIds into the `loadingRecordArrays`
+      bookkeeping structure, which will allow the `ManyArray` to know
+      when all of its loading elements are loaded from the server.
+    * ask the adapter to load the unloaded elements, by invoking
+      findMany with the still-unloaded IDs.
+  */
+  findMany: function(type, ids) {
+    // 1. Convert ids to client ids
+    // 2. Determine which of the client ids need to be loaded
+    // 3. Create a new ManyArray whose content is ALL of the clientIds
+    // 4. Decrement the ManyArray's counter by the number of loaded clientIds
+    // 5. Put the ManyArray into our bookkeeping data structure, keyed on
+    //    the needed clientIds
+    // 6. Ask the adapter to load the records for the unloaded clientIds (but
+    //    convert them back to ids)
+
+    var clientIds = this.clientIdsForIds(type, ids);
+
+    var neededClientIds = this.neededClientIds(type, clientIds),
+        manyArray = this.createManyArray(type, Ember.A(clientIds)),
+        loadedCount = clientIds.length - neededClientIds.length,
+        loadingRecordArrays = this.loadingRecordArrays,
+        clientId, i, l;
+
+    manyArray.send('loadedRecords', loadedCount);
+
+    if (neededClientIds.length) {
+      for (i=0, l=neededClientIds.length; i<l; i++) {
+        clientId = neededClientIds[i];
+        if (loadingRecordArrays[clientId]) {
+          loadingRecordArrays[clientId].push(manyArray);
+        } else {
+          this.loadingRecordArrays[clientId] = [ manyArray ];
+        }
+      }
+
+      this.fetchMany(type, neededClientIds);
+    }
+
+    return manyArray;
   },
 
   findQuery: function(type, query) {
@@ -1368,6 +1457,18 @@ DS.Store = Ember.Object.extend({
       filter = get(array, 'filterFunction');
       this.updateRecordArray(array, filter, type, clientId, dataProxy);
     }, this);
+
+    // loop through all manyArrays containing an unloaded copy of this
+    // clientId and notify them that the record was loaded.
+    var manyArrays = this.loadingRecordArrays[clientId], manyArray;
+
+    if (manyArrays) {
+      for (var i=0, l=manyArrays.length; i<l; i++) {
+        manyArrays[i].send('loadedRecords', 1);
+      }
+
+      this.loadingRecordArrays[clientId] = null;
+    }
   },
 
   updateRecordArray: function(array, filter, type, clientId, dataProxy) {
@@ -1451,6 +1552,24 @@ DS.Store = Ember.Object.extend({
     if (clientId !== undefined) { return clientId; }
 
     return this.pushHash(UNLOADED, id, type);
+  },
+
+  /**
+    @private
+
+    This method works exactly like `clientIdForId`, but does not
+    require looking up the `typeMap` for every `clientId` and
+    invoking a method per `clientId`.
+  */
+  clientIdsForIds: function(type, ids) {
+    var typeMap = this.typeMapFor(type),
+        idToClientIdMap = typeMap.idToCid;
+
+    return Ember.EnumerableUtils.map(ids, function(id) {
+      var clientId = idToClientIdMap[id];
+      if (clientId) { return clientId; }
+      return this.pushHash(UNLOADED, id, type);
+    }, this);
   },
 
   // ................
@@ -3194,7 +3313,7 @@ var hasAssociation = function(type, options) {
 
     key = options.key || get(this, 'namingConvention').keyToJSONKey(key);
     ids = findRecord(store, type, data, key);
-    association = store.findMany(type, ids);
+    association = store.findMany(type, ids || []);
     set(association, 'parentRecord', this);
 
     return association;

@@ -11778,7 +11778,7 @@ Ember.Application = Ember.Namespace.extend(
 
   /**
     Instantiate all controllers currently available on the namespace
-    and inject them onto a state manager.
+    and inject them onto a router.
 
     Example:
 
@@ -11844,14 +11844,13 @@ Ember.Application = Ember.Namespace.extend(
   /**
     @private
 
-    If the application has a state manager, use it to route
-    to the current URL, and trigger a new call to `route`
-    whenever the URL changes.
+    If the application has a router, use it to route to the current URL, and
+    trigger a new call to `route` whenever the URL changes.
   */
-  startRouting: function(stateManager) {
-    var location = get(stateManager, 'location'),
+  startRouting: function(router) {
+    var location = get(router, 'location'),
         rootElement = get(this, 'rootElement'),
-        applicationController = get(stateManager, 'applicationController');
+        applicationController = get(router, 'applicationController');
 
     if (this.ApplicationView && applicationController) {
       var applicationView = this.ApplicationView.create({
@@ -11862,9 +11861,9 @@ Ember.Application = Ember.Namespace.extend(
       applicationView.appendTo(rootElement);
     }
 
-    stateManager.route(location.getURL());
+    router.route(location.getURL());
     location.onUpdateURL(function(url) {
-      stateManager.route(url);
+      router.route(url);
     });
   },
 
@@ -12876,19 +12875,7 @@ Ember.ControllerMixin.reopen({
     following code will assign a new `App.PostsView` to
     that outlet:
 
-        applicationController.connectOutlet(App.PostsView);
-
-    You can specify a particular outlet to use as the first
-    parameter to `connectOutlet`. For example, if your
-    main template looks like:
-
-        <h1>My Blog</h1>
-        {{outlet master}}
-        {{outlet detail}}
-
-    You can assign an `App.PostsView` to the master outlet:
-
-        applicationController.connectOutlet('master', App.PostsView);
+        applicationController.connectOutlet('posts');
 
     In general, you will also want to assign a controller
     to the newly created view. By convention, a controller
@@ -12906,18 +12893,27 @@ Ember.ControllerMixin.reopen({
     You can supply a `content` for the controller by supplying
     a final argument after the view class:
 
-        applicationController.connectOutlet(App.PostsView, App.Post.find());
+        applicationController.connectOutlet('posts', App.Post.find());
 
-    The only required argument is `viewClass`. You can optionally
-    specify an `outletName` before `viewClass` and/or a `context`
-    after `viewClass` in any combination.
+    You can specify a particular outlet to use. For example, if your main
+    template looks like:
 
-    @param {String} outletName the name of the outlet to assign
-      the newly created view to (optional)
-    @param {Class} viewClass a view class to instantiate
+        <h1>My Blog</h1>
+        {{outlet master}}
+        {{outlet detail}}
+
+    You can assign an `App.PostsView` to the master outlet:
+
+        applicationController.connectOutlet({
+          name: 'posts',
+          outletName: 'master',
+          context: App.Post.find()
+        });
+
+    @param {Class} name a view class to instantiate
     @param {Object} context a context object to assign to the
       controller's `content` property, if a controller can be
-      found.
+      found (optional)
   */
   connectOutlet: function(name, context) {
     // Normalize arguments. Supported arguments:
